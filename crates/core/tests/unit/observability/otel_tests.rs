@@ -7881,13 +7881,24 @@ fn otlp_timestamp_range_drops_invalid_events_and_preserves_boundaries() {
     }
 }
 
+/// Occupies runtime's only worker for 250 ms and returns once held.
+fn hold_worker(runtime: &tokio::runtime::Runtime) -> tokio::task::JoinHandle<()> {
+    let (held_sender, held_receiver) = mpsc::channel();
+    let held = runtime.spawn(async move {
+        held_sender.send(()).unwrap();
+        thread::sleep(Duration::from_millis(250));
+    });
+    held_receiver.recv().unwrap();
+    held
+}
+
 #[test]
 fn provider_build_drains_the_startup_resource_message_before_the_first_span() {
     use opentelemetry::trace::{Span as _, Tracer as _, TracerProvider as _};
 
     let runtime = test_tokio_runtime();
     let _runtime_guard = runtime.enter();
-    let _held_worker = runtime.spawn(async { thread::sleep(Duration::from_millis(250)) });
+    let _held_worker = hold_worker(&runtime);
     let directory = tempfile::tempdir().unwrap();
     let config = TraceConfig::File(
         OpenTelemetryFileSinkConfig::new(
@@ -7926,5 +7937,32 @@ fn provider_build_drains_the_startup_resource_message_before_the_first_span() {
         names,
         ["first"],
         "the first span must survive the startup message: {contents}"
+    );
+}
+
+#[test]
+fn provider_build_fails_when_the_startup_queue_does_not_drain() {
+    let runtime = test_tokio_runtime();
+    let _runtime_guard = runtime.enter();
+    let _held_worker = hold_worker(&runtime);
+    let config = TraceConfig::Endpoint(
+        OpenTelemetryConfig::new(OpenTelemetryType::Full, "http://127.0.0.1:4318/v1/traces")
+            .with_timeout(Duration::from_millis(50))
+            .with_max_queue_size(1)
+            .with_max_export_batch_size(1),
+    );
+    let error = build_tracer_provider_with_resource(
+        &config,
+        SignalRuntimeDiagnostics::new(None),
+        configured_resource_attributes(&config),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            OpenTelemetryError::ExporterBuild(message)
+                if message.contains("did not drain its startup message")
+        ),
+        "{error}"
     );
 }

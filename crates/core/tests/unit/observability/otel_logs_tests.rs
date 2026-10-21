@@ -1024,7 +1024,12 @@ fn provider_build_drains_the_startup_resource_message_before_the_first_record() 
         .build()
         .unwrap();
     let _runtime_guard = runtime.enter();
-    let _held_worker = runtime.spawn(async { thread::sleep(Duration::from_millis(250)) });
+    let (held_sender, held_receiver) = mpsc::channel();
+    let _held_worker = runtime.spawn(async move {
+        held_sender.send(()).unwrap();
+        thread::sleep(Duration::from_millis(250));
+    });
+    held_receiver.recv().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/v1/logs", listener.local_addr().unwrap());
     let receiver = capture_one_request(listener);
