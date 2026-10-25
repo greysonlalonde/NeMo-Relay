@@ -51,20 +51,21 @@ repos:
       - id: ruff-format
 
   # Python — type checking
-  - repo: local
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.91
     hooks:
       - id: ty
-        name: ty (type check)
-        entry: uv run ty check . --extra-search-path python/plugin/src --extra-search-path scripts/docs --extra-search-path scripts/licensing --exclude docs/** --exclude fern/** --exclude ./examples/** --exclude .cache/** --exclude .claude/** --exclude python/plugin/src/nemo_relay_plugin/_proto/**
-        language: system
-        types: [python]
-        pass_filenames: false
-      - id: ty-python-plugin-example
-        name: ty (Python plugin example)
-        entry: uv run ty check examples/python-grpc-worker-plugin/nemo_relay_python_grpc_worker_example --extra-search-path python/plugin/src --exclude python/plugin/src/nemo_relay_plugin/_proto/**
-        language: system
-        files: '^(examples/python-grpc-worker-plugin/nemo_relay_python_grpc_worker_example/.*\.py|python/plugin/src/nemo_relay_plugin/.*\.py)$'
-        pass_filenames: false
+        args:
+          - --isolated
+          - --locked
+          - --no-install-project
+          - --all-packages
+          - --extra=langchain
+          - --extra=langchain-nvidia
+          - --extra=langgraph
+          - --extra=deepagents
+          - --extra=google-adk
+          - --group=google-adk-test
 
   # Documentation — external link validation
   - repo: local

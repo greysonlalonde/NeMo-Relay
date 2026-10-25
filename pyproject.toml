@@ -169,12 +169,16 @@ omit = [
     "python/plugin/src/nemo_relay_plugin/_proto/*",
 ]
 
+[tool.ty.environment]
+extra-paths = ["scripts/docs", "scripts/licensing"]
+
+[tool.ty.src]
+exclude = ["docs/**", "fern/**", "examples/**", "!examples/python-grpc-worker-plugin/**", "python/plugin/src/nemo_relay_plugin/_proto/**"]
+
 [tool.ty.analysis]
-# nemo_relay._native is a compiled Rust extension (built by maturin) that only
-# exists after `uv sync` / `pip install -e .`. Suppress unresolved-import for it.
 # LangChain, LangGraph, Deep Agents, and Google ADK are optional integration
 # dependencies which aren't installed by default.
-allowed-unresolved-imports = ["anthropic.**", "deepagents.**", "google.**", "grpc", "httpx", "langchain.**", "langchain_*.**", "langgraph.**", "nemo_relay._native", "openai.**", "pytest"]
+allowed-unresolved-imports = ["anthropic.**", "deepagents.**", "google.**", "grpc", "httpx", "langchain.**", "langchain_*.**", "langgraph.**", "openai.**", "pytest"]
 
 [[tool.ty.overrides]]
 include = ["python/tests/**"]
