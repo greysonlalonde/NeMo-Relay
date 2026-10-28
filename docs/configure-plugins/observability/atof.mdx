@@ -180,6 +180,69 @@ stream-sink operation. Await it from Python and Node.js so queued sanitizers
 can finish on the running event loop. Teardown does not guarantee that a worker
 which timed out drained or closed.
 
+## Runtime Diagnostics
+
+Each stream sink records a runtime diagnostic when a delivery fails, drops, or
+times out.
+
+The following table lists each diagnostic code and when Relay records it:
+
+| Code | Recorded when |
+|---|---|
+| `atof.stream_endpoint_disabled` | The sink cannot start. Relay drops every later event. |
+| `atof.stream_connection_failed` | A WebSocket connect, send, or drain attempt fails. Relay keeps the pending events and retries. |
+| `atof.stream_delivery_failed` | An HTTP `POST` fails or returns a non-`2xx` status, a header file cannot be read, or an NDJSON upload fails after it carried events. The count is the number of affected events. Relay does not retry. |
+| `atof.stream_events_dropped` | A WebSocket sink closes with undelivered events, or a disabled or stopped sink receives an event. Relay does not deliver them. |
+| `atof.stream_flush_failed` | The sink does not confirm a flush within `timeout_millis`, its worker stopped, or an NDJSON upload ended before the flush. |
+| `atof.stream_close_failed` | The sink does not confirm close within `timeout_millis`, its worker stopped, or an NDJSON upload does not finish in time. |
+
+Each entry has a stable code, a running count, and the distinct messages
+recorded for that code. Messages name the transport and URL origin. Counts
+persist across flushes and shutdown.
+
+Read the snapshot from a manual exporter with `runtime_diagnostics()` in Rust
+and Python, `runtimeDiagnostics()` in Node.js, and `RuntimeDiagnostics()` in
+Go. The C FFI exposes `nemo_relay_atof_exporter_runtime_diagnostics_json`,
+which returns a caller-owned JSON array released with
+`nemo_relay_string_free`.
+
+The following examples flush a manual exporter and print each diagnostic:
+
+<Tabs>
+<Tab title="Python" language="python">
+```python
+exporter.force_flush()
+for diagnostic in exporter.runtime_diagnostics().entries:
+    print(diagnostic.code, diagnostic.count, diagnostic.message)
+```
+
+</Tab>
+
+<Tab title="Node.js" language="node">
+```js
+exporter.forceFlush();
+for (const diagnostic of exporter.runtimeDiagnostics()) {
+  console.log(diagnostic.code, diagnostic.count, diagnostic.message);
+}
+```
+
+</Tab>
+
+<Tab title="Rust" language="rust">
+```rust
+exporter.force_flush()?;
+for diagnostic in exporter.runtime_diagnostics().entries() {
+    println!("{} {} {}", diagnostic.code, diagnostic.count, diagnostic.message);
+}
+```
+
+</Tab>
+
+</Tabs>
+
+For plugin-managed stream sinks, Relay also records each diagnostic in the
+active plugin report's `runtime_diagnostics`. Each entry sets `component` to
+`observability` and `field` to `atof.sinks[i].url`.
 
 ## Expected Output
 
@@ -478,3 +541,5 @@ Common configuration and runtime issues include:
   filesystem.
 - The process terminates before a subscriber or exporter barrier, so the file
   or stream destination is missing queued tail records.
+- A stream sink reports `atof.stream_*` runtime diagnostics after a flush or
+  close, so the collector rejected, dropped, or did not acknowledge deliveries.
