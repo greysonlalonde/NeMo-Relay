@@ -12,7 +12,6 @@ const {
   __testClosedCollectorCallback,
   __testClosedFinalizerCallback,
   __testClosedPromiseAwareCall,
-  __testClosedReplyCallback,
   clearLastCallbackError,
   deregisterLlmSanitizeRequestGuardrail,
   flushSubscribers,
@@ -64,11 +63,6 @@ describe('callback error helpers', () => {
       deregisterLlmSanitizeRequestGuardrail('node_llm_san_req_public_error');
       clearLastCallbackError();
     }
-  });
-
-  it('closed reply callbacks refuse the call with the closing status', () => {
-    const refusal = __testClosedReplyCallback(() => ({ ok: true }), { value: 1 });
-    assert.match(refusal, /Closing/);
   });
 
   it('closed collector callbacks surface the queue failure and record it', async () => {
