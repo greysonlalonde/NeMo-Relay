@@ -2069,7 +2069,7 @@ pub fn with_scope<'env>(
     .map_err(Error::from)?;
     let scope_uuid = scope_handle.uuid;
 
-    // Hand the callback a real `ScopeHandle` instance, matching the Rust,
+    // Hand the callback a real `ScopeHandle` instance, matching the Rust and
     // Python bindings, so it can be passed back into `event`,
     // `toolCallExecute`, and `llmCallExecute`. The instance is materialized on
     // the JS thread because a `napi_wrap`'d handle cannot cross the
@@ -2334,15 +2334,10 @@ pub fn tool_call_execute<'env>(
     )
 }
 
-/// Execute a tool call end-to-end, supporting both sync and async (Promise-returning) callbacks.
+/// Execute a tool call end-to-end with a callback that returns a value or a Promise.
 ///
-/// Same lifecycle as `toolCallExecute` (guardrails → intercepts → func → response processing),
-/// but transparently handles JS callbacks that return Promises. Uses `napi_is_promise` to detect
-/// Promise return values and resolves them before continuing the pipeline.
-/// An optional trailing `toolCallId` is recorded in both lifecycle events.
-///
-/// Accepts a raw `Function` instead of `ThreadsafeFunction` so it can create a
-/// promise-aware wrapper with access to `Env`.
+/// Runs the same lifecycle as `toolCallExecute`. An optional trailing `toolCallId` is
+/// recorded in both lifecycle events.
 #[allow(clippy::too_many_arguments)]
 #[napi(ts_return_type = "Promise<ToolExecutionResult>", catch_unwind)]
 pub fn tool_call_execute_async<'env>(
@@ -2574,11 +2569,10 @@ pub fn llm_call_execute<'env>(
     )
 }
 
-/// Execute an LLM call end-to-end, supporting both sync and async (Promise-returning) callbacks.
+/// Execute an LLM call end-to-end with a callback that returns a value or a Promise.
 ///
-/// Same lifecycle as `llmCallExecute` (guardrails → intercepts → func → response processing),
-/// but transparently handles JS callbacks that return Promises.
-/// Supply `codecDecode` and `codecEncode` together or omit both.
+/// Runs the same lifecycle as `llmCallExecute`. Supply `codecDecode` and `codecEncode`
+/// together or omit both.
 #[allow(clippy::too_many_arguments)]
 #[napi(ts_return_type = "Promise<unknown>", catch_unwind)]
 pub fn llm_call_execute_async<'env>(
@@ -4913,11 +4907,8 @@ impl AdaptiveRuntime {
 
     /// Register all configured adaptive runtime features.
     ///
-    /// `register()` and `shutdown()` both temporarily take ownership of the
-    /// runtime state, so concurrent calls are mutually exclusive by design.
-    /// Once either operation takes the state, another concurrent registration or
-    /// shutdown attempt fails with "adaptive runtime already shut down". This
-    /// prevents double-registration and shutdown-during-registration races.
+    /// A `register()` or `shutdown()` call that overlaps another fails with
+    /// "adaptive runtime already shut down".
     #[napi(ts_return_type = "Promise<void>", catch_unwind)]
     pub fn register<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
         let inner = self.inner.clone();
