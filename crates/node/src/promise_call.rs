@@ -147,27 +147,6 @@ type PromiseArgs = FnArgs<(
 
 type PromiseTsfn = HandledTsfn<PromiseCall, PromiseArgs>;
 
-#[derive(Clone, Copy)]
-struct CallMode {
-    spread: bool,
-    publication: bool,
-}
-
-impl CallMode {
-    const DIRECT: Self = Self {
-        spread: false,
-        publication: false,
-    };
-    const SPREAD: Self = Self {
-        spread: true,
-        publication: false,
-    };
-    const SPREAD_PUBLICATION: Self = Self {
-        spread: true,
-        publication: true,
-    };
-}
-
 struct JsonCompletion {
     sender: tokio::sync::oneshot::Sender<FlowResult<Json>>,
     finished: Arc<AtomicBool>,
@@ -677,7 +656,6 @@ impl PromiseAwareFn {
             callback_factory::wrap_promise_callback(env, func, settlers)?;
         let registry = Arc::clone(&calls);
         let teardown = teardown_flag(env)?;
-        // The callback must not keep the Node event loop alive.
         let tsfn = wrapper
             .build_threadsafe_function::<PromiseCall>()
             .callee_handled::<true>()
@@ -691,75 +669,40 @@ impl PromiseAwareFn {
         })
     }
 
-    /// Call the JS function with the given args and await the result.
     pub async fn call(&self, args: Json) -> FlowResult<Json> {
-        self.call_inner(PrimaryArg::Json(args), CallMode::DIRECT, None)
+        self.call_inner(PrimaryArg::Json(args), false, false, None)
             .await
     }
 
-    /// Call a JavaScript callback with several JSON arguments.
-    ///
-    /// This retains the normal callback shape for middleware such as tool
-    /// guardrails, whose public contract is `(name, payload)` rather than a
-    /// single envelope object.
-    pub async fn call_spread(&self, args: Vec<Json>) -> FlowResult<Json> {
-        self.call_inner(PrimaryArg::Json(Json::Array(args)), CallMode::SPREAD, None)
+    pub async fn call_spread(&self, args: Vec<Json>, publication: bool) -> FlowResult<Json> {
+        self.call_inner(PrimaryArg::Json(Json::Array(args)), true, publication, None)
             .await
     }
 
-    /// Call a spread callback from queued event publication.
-    pub async fn call_spread_for_publication(&self, args: Vec<Json>) -> FlowResult<Json> {
-        self.call_inner(
-            PrimaryArg::Json(Json::Array(args)),
-            CallMode::SPREAD_PUBLICATION,
-            None,
-        )
-        .await
-    }
-
-    /// Call the JS function with a builder-constructed first argument and await
-    /// the result.
-    ///
-    /// The builder runs on the Node main thread, so it can construct values that
-    /// cannot cross the threadsafe-function boundary as plain JSON, such as a
-    /// `#[napi]` class instance.
     pub async fn call_with_arg0(&self, build_arg0: Arg0Builder) -> FlowResult<Json> {
-        self.call_inner(PrimaryArg::Build(build_arg0), CallMode::DIRECT, None)
+        self.call_inner(PrimaryArg::Build(build_arg0), false, false, None)
             .await
     }
 
-    /// Call a JavaScript callback with builder-constructed spread arguments.
-    pub async fn call_spread_with_arg0(&self, build_arg0: Arg0Builder) -> FlowResult<Json> {
-        self.call_inner(PrimaryArg::Build(build_arg0), CallMode::SPREAD, None)
-            .await
-    }
-
-    /// Call a spread callback from queued event publication.
-    pub async fn call_spread_with_arg0_for_publication(
+    pub async fn call_spread_with_arg0(
         &self,
         build_arg0: Arg0Builder,
+        publication: bool,
     ) -> FlowResult<Json> {
-        self.call_inner(
-            PrimaryArg::Build(build_arg0),
-            CallMode::SPREAD_PUBLICATION,
-            None,
-        )
-        .await
+        self.call_inner(PrimaryArg::Build(build_arg0), true, publication, None)
+            .await
     }
 
-    /// Call the JS function with a middleware-style `next(arg)` callback that
-    /// resolves to a JSON result.
     pub async fn call_with_json_next(&self, args: Json, next: JsonNextFn) -> FlowResult<Json> {
         self.call_inner(
             PrimaryArg::Json(args),
-            CallMode::DIRECT,
+            false,
+            false,
             Some(NextFn::Json(next)),
         )
         .await
     }
 
-    /// Call a spread JavaScript callback with builder-constructed arguments
-    /// followed by a middleware-style `next(arg)` callback.
     pub async fn call_spread_with_arg0_and_json_next(
         &self,
         build_arg0: Arg0Builder,
@@ -767,7 +710,8 @@ impl PromiseAwareFn {
     ) -> FlowResult<Json> {
         self.call_inner(
             PrimaryArg::Build(build_arg0),
-            CallMode::SPREAD,
+            true,
+            false,
             Some(NextFn::Json(next)),
         )
         .await
@@ -890,7 +834,8 @@ impl PromiseAwareFn {
     async fn call_inner(
         &self,
         arg0: PrimaryArg,
-        mode: CallMode,
+        spread: bool,
+        publication: bool,
         next: Option<NextFn>,
     ) -> FlowResult<Json> {
         let tsfn = self.tsfn()?;
@@ -903,11 +848,9 @@ impl PromiseAwareFn {
                 invoke: InvokeArgs {
                     call_id,
                     arg0,
-                    spread: mode.spread,
+                    spread,
                     next,
-                    publication: mode.publication,
-                    // Queued tool and LLM sanitizers use the publication context to avoid
-                    // waiting on their own publication.
+                    publication,
                     publication_context_id: publication_callback_context_id(),
                     scope: CallbackScope::capture(),
                     stream_result: false,
