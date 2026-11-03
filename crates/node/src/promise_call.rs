@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use napi::Env;
@@ -432,10 +432,6 @@ impl Drop for JsCallbackStream {
     }
 }
 
-fn closed_tsfn_error() -> FlowError {
-    FlowError::Internal("PromiseAwareFn threadsafe function closed".into())
-}
-
 fn queue_status_result(status: napi::Status) -> FlowResult<()> {
     if status == napi::Status::Ok {
         Ok(())
@@ -657,8 +653,9 @@ fn build_invoke_args(env: &Env, call: InvokeArgs, undefined: JsArg) -> napi::Res
 }
 
 pub(crate) struct PromiseAwareFn {
-    tsfn: RwLock<Option<Arc<PromiseTsfn>>>,
+    tsfn: Arc<PromiseTsfn>,
     calls: Arc<CallRegistry>,
+    teardown: Arc<AtomicBool>,
 }
 
 impl PromiseAwareFn {
@@ -669,16 +666,18 @@ impl PromiseAwareFn {
             callback_factory::wrap_promise_callback(env, func, settlers)?;
         let registry = Arc::clone(&calls);
         let teardown = teardown_flag(env)?;
-        let tsfn = wrapper
-            .build_threadsafe_function::<PromiseCall>()
-            .callee_handled::<true>()
-            .weak::<true>()
-            .build_callback(move |ctx: ThreadsafeCallContext<PromiseCall>| {
-                build_promise_args(ctx, &registry, &teardown)
-            })?;
+        let dispatch_teardown = Arc::clone(&teardown);
+        let tsfn = callback_factory::handled_tsfn(
+            env,
+            &wrapper,
+            move |ctx: ThreadsafeCallContext<PromiseCall>| {
+                build_promise_args(ctx, &registry, &dispatch_teardown)
+            },
+        )?;
         Ok(Self {
-            tsfn: RwLock::new(Some(Arc::new(tsfn))),
+            tsfn: Arc::new(tsfn),
             calls,
+            teardown,
         })
     }
 
@@ -711,12 +710,8 @@ impl PromiseAwareFn {
         self.call_stream_inner(invocation, Some(next), None).await
     }
 
-    fn tsfn(&self) -> FlowResult<Arc<PromiseTsfn>> {
-        self.tsfn
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .ok_or_else(closed_tsfn_error)
+    pub(crate) fn abort_tsfn(&self) -> napi::Result<()> {
+        abort_tsfn(&self.tsfn)
     }
 
     fn queue(
@@ -725,12 +720,22 @@ impl PromiseAwareFn {
         next: Option<NextFn>,
         completion: CallCompletion,
     ) -> FlowResult<(u64, Arc<PromiseTsfn>)> {
-        let tsfn = self.tsfn()?;
+        if self.teardown.load(Ordering::Acquire) {
+            let skipped = || {
+                FlowError::Internal(format!(
+                    "JS middleware callback skipped: {ENV_SHUTTING_DOWN}"
+                ))
+            };
+            completion.fail(skipped());
+            return Err(skipped());
+        }
+        let tsfn = Arc::clone(&self.tsfn);
         let call_id = self.calls.allocate();
+        let publication_context_id = publication_callback_context_id();
         let next = next.map(|next| NextState {
             next,
             continuation_context: MiddlewareContinuationContext::capture(),
-            publication_context_id: publication_callback_context_id(),
+            publication_context_id: publication_context_id.clone(),
         });
         let status = tsfn.call(
             Ok(PromiseCall::Invoke(Box::new(CallArgs {
@@ -738,7 +743,7 @@ impl PromiseAwareFn {
                     call_id,
                     invocation,
                     next,
-                    publication_context_id: publication_callback_context_id(),
+                    publication_context_id,
                     scope: CallbackScope::capture(),
                     stream_result: matches!(completion, CallCompletion::Stream(_)),
                 },
@@ -788,18 +793,6 @@ impl PromiseAwareFn {
             closed: closed_rx,
             cancellation,
         }))
-    }
-
-    pub(crate) fn close(&self) -> napi::Result<()> {
-        let tsfn = self
-            .tsfn
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        match tsfn {
-            Some(tsfn) => abort_tsfn(&tsfn),
-            None => Ok(()),
-        }
     }
 
     async fn call_inner(&self, invocation: Invocation, next: Option<NextFn>) -> FlowResult<Json> {

@@ -107,7 +107,6 @@ pub(crate) fn mark_exiting_on_process_exit(env: &Env) -> napi::Result<()> {
     )?;
     Ok(())
 }
-
 impl EnvState {
     fn new(env: &Env) -> napi::Result<Self> {
         let factories = Factories::new(env)?;
@@ -116,7 +115,10 @@ impl EnvState {
             .borrow_back(env)?
             .build_threadsafe_function::<Settlement>()
             .weak::<true>()
-            .build_callback(|ctx: ThreadsafeCallContext<Settlement>| ctx.value.deliver(&ctx.env))?;
+            .build_callback(|ctx: ThreadsafeCallContext<Settlement>| {
+                ctx.value.deliver(&ctx.env);
+                Ok(())
+            })?;
         Ok(Self {
             teardown: Arc::new(AtomicBool::new(false)),
             factories,
@@ -162,7 +164,7 @@ struct Settlement {
 }
 
 impl Settlement {
-    fn deliver(self, env: &Env) -> napi::Result<()> {
+    fn deliver(self, env: &Env) {
         let Self {
             deferred,
             outcome,
@@ -170,14 +172,17 @@ impl Settlement {
             pending,
             liveness,
         } = self;
-        let settled = settle_deferred(env, deferred, outcome);
-        let released = if liveness.keeps_loop_alive() && pending.fetch_sub(1, Ordering::AcqRel) == 1
+        if let Err(error) = settle_deferred(env, deferred, outcome) {
+            record_callback_error(format!("nemo_relay: failed to settle a promise: {error}"));
+        }
+        if liveness.keeps_loop_alive()
+            && pending.fetch_sub(1, Ordering::AcqRel) == 1
+            && let Err(error) = settler_liveness(env, &settler, false)
         {
-            settler_liveness(env, &settler, false)
-        } else {
-            Ok(())
-        };
-        settled.and(released)
+            record_callback_error(format!(
+                "nemo_relay: failed to release the promise settler: {error}"
+            ));
+        }
     }
 }
 
