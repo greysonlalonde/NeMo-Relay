@@ -10,12 +10,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use napi::bindgen_prelude::{PromiseRaw, ToNapiValue, within_runtime_if_available};
+use napi::bindgen_prelude::{
+    FnArgs, Function, JsObjectValue, Object, PromiseRaw, ToNapiValue, Unknown,
+    within_runtime_if_available,
+};
 use napi::threadsafe_function::{ThreadsafeCallContext, ThreadsafeFunctionCallMode};
 use napi::{Env, check_status};
 
 use crate::callback_factory::Factories;
-use crate::convert::{JsArg, Tsfn, abort_tsfn, js_value, record_callback_error};
+use crate::convert::{
+    JsArg, Tsfn, abort_tsfn, closure_function, detach, js_value, record_callback_error,
+};
 use crate::error::{Error, Result};
 
 pub(crate) type Settler = Box<dyn FnOnce(&Env) -> napi::Result<JsArg> + Send>;
@@ -94,6 +99,23 @@ pub(crate) fn state(env: &Env) -> napi::Result<Rc<EnvState>> {
 
 pub(crate) fn teardown_flag(env: &Env) -> napi::Result<Arc<AtomicBool>> {
     Ok(Arc::clone(&state(env)?.teardown))
+}
+
+pub(crate) const ENV_SHUTTING_DOWN: &str = "Node environment is shutting down";
+
+pub(crate) fn mark_exiting_on_process_exit(env: &Env) -> napi::Result<()> {
+    let flag = teardown_flag(env)?;
+    let mark = closure_function(env, "__nemo_relay_mark_env_exiting", move |_ctx| {
+        flag.store(true, Ordering::Release);
+        Ok(())
+    })?;
+    let process: Object = env.get_global()?.get_named_property("process")?;
+    let once: Function<FnArgs<(String, JsArg)>, Unknown> = process.get_named_property("once")?;
+    once.apply(
+        process,
+        FnArgs::from(("exit".to_owned(), detach(env, &mark))),
+    )?;
+    Ok(())
 }
 
 impl EnvState {

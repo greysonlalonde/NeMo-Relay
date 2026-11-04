@@ -634,6 +634,7 @@ fn initialize_node_environment(env: Env) -> napi::Result<()> {
         cleanup_node_environment();
         return Err(error);
     }
+    crate::environment::mark_exiting_on_process_exit(&env)?;
     Ok(())
 }
 

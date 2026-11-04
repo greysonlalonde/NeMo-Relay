@@ -29,7 +29,9 @@ use nemo_relay_types::error::{FlowError, Result as FlowResult};
 
 use crate::callback_factory::{self, CallbackScope, PromiseSettlers};
 use crate::convert::{HandledTsfn, JsArg, abort_tsfn, closure_function, detach, js_value};
-use crate::environment::{Liveness, create_promise, spawn_promise};
+use crate::environment::{
+    ENV_SHUTTING_DOWN, Liveness, create_promise, spawn_promise, teardown_flag,
+};
 use crate::error::{Error, Result};
 use tokio_stream::Stream;
 
@@ -588,6 +590,7 @@ fn continue_call(ctx: FunctionCallContext) -> Result<JsArg> {
 fn build_promise_args(
     ctx: ThreadsafeCallContext<PromiseCall>,
     calls: &CallRegistry,
+    teardown: &AtomicBool,
 ) -> napi::Result<PromiseArgs> {
     let env = &ctx.env;
     let undefined = js_value(env, ())?;
@@ -608,6 +611,12 @@ fn build_promise_args(
         }
         PromiseCall::Invoke(call) => {
             let CallArgs { invoke, completion } = *call;
+            if teardown.load(Ordering::Acquire) {
+                completion.fail(FlowError::Internal(format!(
+                    "JS middleware callback skipped: {ENV_SHUTTING_DOWN}"
+                )));
+                return Err(napi::Error::from_reason(ENV_SHUTTING_DOWN));
+            }
             let call_id = invoke.call_id;
             match build_invoke_args(env, invoke, undefined) {
                 Ok(args) => {
@@ -668,13 +677,14 @@ impl PromiseAwareFn {
         let wrapper: Function<PromiseArgs, ()> =
             callback_factory::wrap_promise_callback(env, func, settlers)?;
         let registry = Arc::clone(&calls);
+        let teardown = teardown_flag(env)?;
         // The callback must not keep the Node event loop alive.
         let tsfn = wrapper
             .build_threadsafe_function::<PromiseCall>()
             .callee_handled::<true>()
             .weak::<true>()
             .build_callback(move |ctx: ThreadsafeCallContext<PromiseCall>| {
-                build_promise_args(ctx, &registry)
+                build_promise_args(ctx, &registry, &teardown)
             })?;
         Ok(Self {
             tsfn: RwLock::new(Some(Arc::new(tsfn))),

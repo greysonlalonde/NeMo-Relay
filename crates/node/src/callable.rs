@@ -49,7 +49,7 @@ use crate::convert::{
     HandledTsfn, JsArg, JsArgs2, JsArgs3, PersistentJsFunction, Tsfn, abort_tsfn, closure_function,
     detach, js_value, record_callback_error,
 };
-use crate::environment::teardown_flag;
+use crate::environment::{ENV_SHUTTING_DOWN, teardown_flag};
 use crate::error::Error;
 use crate::promise_call::{JsonNextFn, JsonStreamNextFn, PromiseAwareFn, StreamCancellation};
 use crate::types::{EventSanitizeFields, JsEvent, event_sanitize_fields_from_json};
@@ -852,7 +852,7 @@ impl<T: 'static, Args: 'static + JsValuesTupleIntoVec> JsStreamCallback<T, Args>
     fn queue(&self, call: T, name: &str) -> Result<()> {
         if self.teardown.load(Ordering::Acquire) {
             return Err(FlowError::Internal(format!(
-                "JS {name} callback skipped: Node environment is shutting down"
+                "JS {name} callback skipped: {ENV_SHUTTING_DOWN}"
             )));
         }
         let status = self
@@ -1113,6 +1113,7 @@ struct JsCodecEncodeArgument<'a> {
 pub(crate) struct JsCodecCallback {
     direct: PersistentJsFunction<Json, JsArg>,
     queued: Tsfn<Json, Json, JsArg>,
+    teardown: Arc<AtomicBool>,
     registration_thread: std::thread::ThreadId,
     error_prefix: &'static str,
 }
@@ -1132,6 +1133,7 @@ impl JsCodecCallback {
         Ok(Self {
             direct,
             queued,
+            teardown: teardown_flag(env)?,
             registration_thread: std::thread::current().id(),
             error_prefix,
         })
@@ -1167,13 +1169,27 @@ impl JsCodecCallback {
                 .map_err(|error| FlowError::Internal(format!("{}: {error}", self.error_prefix)))?;
             return unwrap_envelope(unsafe { envelope.into_unknown(&env) }, self.error_prefix);
         }
+        if self.teardown.load(Ordering::Acquire) {
+            return Err(FlowError::Internal(format!(
+                "{}: could not queue the callback: {ENV_SHUTTING_DOWN}",
+                self.error_prefix
+            )));
+        }
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let error_prefix = self.error_prefix;
+        let teardown = Arc::clone(&self.teardown);
         let status = self.queued.call_with_return_value(
             argument,
             ThreadsafeFunctionCallMode::NonBlocking,
             move |value: napi::Result<JsArg>, env| {
-                let _ = tx.send(tsfn_envelope(&env, value, error_prefix));
+                let result = if teardown.load(Ordering::Acquire) {
+                    Err(FlowError::Internal(format!(
+                        "{error_prefix}: {ENV_SHUTTING_DOWN}"
+                    )))
+                } else {
+                    tsfn_envelope(&env, value, error_prefix)
+                };
+                let _ = tx.send(result);
                 Ok(())
             },
         );
