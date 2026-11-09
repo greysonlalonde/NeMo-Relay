@@ -1,0 +1,13 @@
+{
+  "name": "nemo-relay-managed-pi-v2",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Immutable NeMo Relay managed integration for pi.",
+  "type": "module",
+  "main": "./index.ts",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

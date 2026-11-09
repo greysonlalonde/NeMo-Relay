@@ -61,21 +61,21 @@ fn centralized_minimum_versions_accept_stable_boundaries() {
 // spans rather than an error, so silence is the worst possible report.
 #[test]
 fn a_minor_above_the_verified_band_is_reported_as_unverified_without_being_rejected() {
-    let newer = CodingAgent::Pi.validate_version_output("0.85.0").unwrap();
+    let newer = CodingAgent::Pi.validate_version_output("1.6.0").unwrap();
     let note = CodingAgent::Pi
         .unverified_version(&newer)
         .expect("a newer pi minor must be reported");
     assert!(
-        note.contains("0.84"),
+        note.contains("1.5"),
         "the note should name the verified band: {note}"
     );
 
     // Still accepted: refusing would make a user downgrade pi to use Relay at all.
-    assert!(CodingAgent::Pi.validate_version_output("0.85.0").is_ok());
-    assert!(CodingAgent::Pi.validate_version_output("1.0.0").is_ok());
+    assert!(CodingAgent::Pi.validate_version_output("1.6.0").is_ok());
+    assert!(CodingAgent::Pi.validate_version_output("2.0.0").is_ok());
 
     // Inside the band, nothing to say -- including a patch above the floor.
-    for inside in ["0.84.0", "0.84.7"] {
+    for inside in ["0.84.0", "1.0.0", "1.5.7"] {
         let version = CodingAgent::Pi.validate_version_output(inside).unwrap();
         assert_eq!(
             CodingAgent::Pi.unverified_version(&version),

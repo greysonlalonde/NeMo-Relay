@@ -3,15 +3,16 @@ SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# NeMo Relay Managed Pi Extension v1
+# NeMo Relay Managed Pi Extension v2
 
-This directory is the immutable version 1 managed Pi package. Pi loads
-`index.ts` directly; the package has no runtime dependencies beyond Node.js.
+This directory is the immutable version 2 managed Pi package. Pi loads
+`index.ts` and the modules under `src/` directly. The package has no runtime
+dependencies beyond Node.js.
 
 The administrator-owned launcher must load only this managed extension:
 
 ```bash
-pi --no-extensions -e /srv/nemo-relay/nemo-relay-managed-v1/pi/extension-v1/index.ts
+pi --no-extensions -e /srv/nemo-relay/nemo-relay-managed-v1/pi/extension-v2/index.ts
 ```
 
 `--no-extensions` is required. It preserves the explicitly loaded `-e`

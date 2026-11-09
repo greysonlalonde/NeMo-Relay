@@ -774,7 +774,7 @@ Use the [managed Pi extension](#deploy-the-managed-pi-extension) below on Unix.
 On Windows, the equivalent launch command is:
 
 ```powershell
-pi --no-extensions -e 'C:\ProgramData\NVIDIA\NeMoRelay\nemo-relay-managed-v1\pi\extension-v1\index.ts'
+pi --no-extensions -e 'C:\ProgramData\NVIDIA\NeMoRelay\nemo-relay-managed-v1\pi\extension-v2\index.ts'
 ```
 
 Always include `--no-extensions` and the exact administrator-owned extension
@@ -784,12 +784,12 @@ starts the managed MCP process itself; do not register a second Relay MCP proces
 ### Deploy the Managed Pi Extension
 
 The Pi artifact is a fixed TypeScript extension under
-`pi/extension-v1/index.ts`. Load that exact administrator-installed file while
+`pi/extension-v2/index.ts`. Load that exact administrator-installed file while
 disabling discovered extensions; do not copy it into a per-user extension
 directory or rewrite it during upgrades. For example:
 
 ```bash
-pi --no-extensions -e /opt/nvidia/share/nemo-relay-managed-v1/pi/extension-v1/index.ts
+pi --no-extensions -e /opt/nvidia/share/nemo-relay-managed-v1/pi/extension-v2/index.ts
 ```
 
 `--no-extensions` is mandatory for managed launches. Pi still loads the

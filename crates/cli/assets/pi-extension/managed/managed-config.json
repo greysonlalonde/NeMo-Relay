@@ -1,5 +1,5 @@
 {
-  "schema": "nemo-relay-managed-pi-v1",
+  "schema": "nemo-relay-managed-pi-v2",
   "daemonAddress": "__NEMO_RELAY_DAEMON_ADDRESS__",
   "dispatcherCommand": "__NEMO_RELAY_DISPATCHER_COMMAND__"
 }

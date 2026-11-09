@@ -56,9 +56,9 @@ const SERVICEABLE_APIS = new Map<string, 'openai' | 'anthropic'>([
   ['anthropic-messages', 'anthropic'],
 ]);
 
+import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+
 export type RedirectConfig = {
-  /** Gateway base URL; the root, never root + `/v1`. */
-  gatewayUrl: string;
   /** What the gateway forwards OpenAI-compatible traffic to, when known. */
   openaiUpstream?: string;
   /** What the gateway forwards Anthropic traffic to, when known. */
@@ -70,29 +70,13 @@ export type RedirectConfig = {
    * disables redirection entirely.
    */
   mode: 'match' | 'force' | 'off';
-  /**
-   * This invocation's transparent-proxy credential, when the launcher set one.
-   *
-   * A gateway started by `nemo-relay run` authenticates its own client before a
-   * request intercept can rewrite the route, and rejects a provider call that
-   * does not present it (`crates/cli/src/provider_auth.rs`). Hook posts are not
-   * covered by that check -- only provider passthrough is -- so without this the
-   * redirect succeeds and then every model call comes back 401, which is the one
-   * outcome the redirect exists to produce spans for.
-   *
-   * Absent for a standalone `nemo-relay --bind` daemon, which requires no
-   * credential, so the key is omitted rather than sent empty.
-   */
-  proxyToken?: string;
+  canNameUpstream: boolean;
 };
 
-/** A model, narrowed to the fields redirection depends on. */
-export type RedirectModel = {
-  id: string;
-  api: string;
-  provider: string;
-  baseUrl: string;
-};
+export type RedirectModel = Pick<
+  NonNullable<ExtensionContext['model']>,
+  'id' | 'api' | 'provider' | 'baseUrl'
+>;
 
 /**
  * Why a redirect did or did not happen.
@@ -147,20 +131,6 @@ function isSafeToRedirect(model: RedirectModel, config: RedirectConfig): boolean
 }
 
 /**
- * Whether this invocation may tell the gateway where to forward.
- *
- * The gateway honors a named upstream only from a request carrying this run's
- * proxy credential, so without one the header would be ignored and the redirect
- * would land on the gateway's own configured upstream -- the wrong provider,
- * which is the failure the static check exists to prevent. Having the credential
- * is therefore the precondition for redirecting past a mismatch, not a detail of
- * how the request is authenticated.
- */
-function canNameUpstream(config: RedirectConfig): boolean {
-  return Boolean(config.proxyToken);
-}
-
-/**
  * Redirect a provider the gateway does not front, by naming its endpoint.
  *
  * The sibling scan survives from the static path but changes its question. There
@@ -171,14 +141,10 @@ function canNameUpstream(config: RedirectConfig): boolean {
  * that has never heard of them, which is the same broken session the static path
  * refuses to create.
  */
-function nameUpstream(
-  model: RedirectModel,
-  siblings: readonly RedirectModel[],
-): RedirectDecision {
+function nameUpstream(model: RedirectModel, siblings: readonly RedirectModel[]): RedirectDecision {
   const target = normalizeBaseUrl(model.baseUrl);
   const unsafe = siblings.find(
-    (sibling) =>
-      !SERVICEABLE_APIS.has(sibling.api) || normalizeBaseUrl(sibling.baseUrl) !== target,
+    (sibling) => !SERVICEABLE_APIS.has(sibling.api) || normalizeBaseUrl(sibling.baseUrl) !== target,
   );
   if (unsafe) {
     return {
@@ -204,7 +170,9 @@ function nameUpstream(
 
 /** Whether this outcome explains something a trace reader would otherwise have to guess. */
 export function isNotable(decision: RedirectDecision): boolean {
-  return decision.kind === 'redirect' || !['no-model', 'already-redirected'].includes(decision.code);
+  return (
+    decision.kind === 'redirect' || !['no-model', 'already-redirected'].includes(decision.code)
+  );
 }
 
 /**
@@ -240,12 +208,7 @@ export function decideRedirect(
   model: RedirectModel | undefined,
   config: RedirectConfig,
   redirected: ReadonlySet<string>,
-  /**
-   * Every model of `model.provider`, as the catalog had them **before** any
-   * redirect. Optional only so an older caller still type-checks; omitting it
-   * restores the per-model check, which is unsound for a mixed provider.
-   */
-  siblings: readonly RedirectModel[] = [],
+  siblings: readonly RedirectModel[],
 ): RedirectDecision {
   if (config.mode === 'off') {
     return {
@@ -302,7 +265,7 @@ export function decideRedirect(
     // Not knowing the gateway's upstream stops mattering once we can name ours:
     // the comparison existed to prove a redirect lands on the right provider, and
     // naming the endpoint proves it directly.
-    if (canNameUpstream(config)) {
+    if (config.canNameUpstream) {
       return nameUpstream(model, siblings);
     }
     // Launched outside `nemo-relay run --agent pi`, so the gateway's upstream
@@ -329,7 +292,7 @@ export function decideRedirect(
     // speak an API the gateway serves, but only the two it is configured for are
     // the endpoint a model already calls. Naming the endpoint turns that from a
     // refusal into a redirect.
-    if (canNameUpstream(config)) {
+    if (config.canNameUpstream) {
       return nameUpstream(model, siblings);
     }
     return {
@@ -371,29 +334,5 @@ export function decideRedirect(
     api: model.api,
     upstream: model.baseUrl,
     reason: `gateway forwards ${family} traffic to the same endpoint (${upstream})`,
-  };
-}
-
-/** Read redirection configuration from the environment the launcher sets. */
-export function redirectConfigFromEnv(gatewayUrl: string): RedirectConfig {
-  const raw = process.env.NEMO_RELAY_PI_REDIRECT;
-  let mode: RedirectConfig['mode'] = 'match';
-  if (raw === 'off' || raw === 'force') mode = raw;
-  // Spread conditionally rather than assigning `undefined`: the package builds
-  // under `exactOptionalPropertyTypes`, where an explicit `undefined` is not
-  // the same as an absent key.
-  const openaiUpstream = process.env.NEMO_RELAY_PI_OPENAI_UPSTREAM;
-  const anthropicUpstream = process.env.NEMO_RELAY_PI_ANTHROPIC_UPSTREAM;
-  // Not a `NEMO_RELAY_PI_*` name, deliberately: the launcher exports this one for
-  // every agent it starts, and Codex reads the same variable through its
-  // `env_http_headers` provider configuration. A pi-specific alias would be a
-  // second name for one value, and the two could drift.
-  const proxyToken = process.env.NEMO_RELAY_PROXY_CREDENTIAL;
-  return {
-    gatewayUrl,
-    mode,
-    ...(openaiUpstream ? { openaiUpstream } : {}),
-    ...(anthropicUpstream ? { anthropicUpstream } : {}),
-    ...(proxyToken ? { proxyToken } : {}),
   };
 }

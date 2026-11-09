@@ -46,7 +46,7 @@ Start the gateway, then load the extension:
 ```bash
 nemo-relay --bind 127.0.0.1:4040 &
 NEMO_RELAY_PI_GATEWAY_URL=http://127.0.0.1:4040 \
-  pi -e integrations/pi/index.ts
+  pi -e crates/cli/assets/pi-extension/index.ts
 ```
 
 `pi -e` is trust-ungated, loads before discovery, and survives
@@ -104,7 +104,7 @@ doing so would load code pi itself declined to trust.
 ⚠️ **A git URL does not work, and fails silently.** pi has no
 subdirectory syntax for a git source: it clones the repository *root*, then looks
 there for a `pi` key in `package.json` or a top-level `extensions/` directory.
-This extension lives at `integrations/pi`, and the repository root has neither —
+This extension lives at `crates/cli/assets/pi-extension`, and the repository root has neither —
 so `pi install https://github.com/NVIDIA/NeMo-Relay` reports success, prints an
 install path, and loads no extension. Worse than nothing: the clone's root
 `skills/` *is* picked up, so you get NeMo Relay's Codex and Claude skills in pi
@@ -514,26 +514,24 @@ prefix, so the gate records the decision, not the command. See
 ## Development
 
 ```bash
-npm run typecheck --prefix integrations/pi
-node --test integrations/pi/test/*.test.mjs
+npm run typecheck --workspace=nemo-relay-pi
+npm test --workspace=nemo-relay-pi
 ```
 
 ### Layout
 
-The extension's source lives in `crates/cli/assets/pi-extension`, and
-`package.json`, `index.ts` and `src/` here are symlinks to it. There is one copy
-of every file, edited from either path.
+The package sits under the CLI crate so the published `nemo-relay-cli` crate can
+embed it.
 
-It lives under the CLI crate for a packaging reason rather than a design one:
-`nemo-relay install pi` embeds the extension with `include_str!` so installing
-needs no checkout, `nemo-relay-cli` is published to crates.io, and Cargo packages
-only files below the crate root. A copy kept in step by a sync step was the
-alternative, and it duplicated all seven files.
+- `index.ts`: standalone entry point, written by `nemo-relay install pi`.
+- `managed.ts`: managed entry point, shipped by the daemon bundle as
+  `pi/extension-v2/index.ts`.
+- `src/`: hook handlers and decisions shared by both entry points.
+- `src/standalone/`: forwards hooks through `nemo-relay hook-forward pi`.
+- `src/managed/`: posts hooks to the daemon and runs the MCP lease.
+- `managed/`: README, manifest and configuration template for the bundle.
 
-What is real here is what has no runtime role: this README, `tsconfig.json` and
-`test/`. One consequence is worth knowing before you copy this directory
-anywhere -- it is not self-contained, so an install copies from
-`crates/cli/assets/pi-extension` instead.
+Types come from `@earendil-works/pi-coding-agent`, a development dependency.
 
 The gateway half of the contract is covered in Rust by
 `pi_tool_call_hook_rejects_when_conditional_guardrail_blocks`,

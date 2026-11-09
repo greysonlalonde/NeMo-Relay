@@ -10,14 +10,12 @@
  * is only correct when that upstream is the endpoint the model would otherwise
  * have called. Getting this wrong does not cost spans, it breaks the session.
  *
- * Run: node --test integrations/pi/test/*.test.mjs
+ * Run: npm test --workspace=nemo-relay-pi
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 const { decideRedirect, isNotable, normalizeBaseUrl } = await import('../src/provider-redirect.ts');
-
-const GATEWAY = 'http://127.0.0.1:4040';
 
 /** The real NVIDIA catalog entry, which is what this was developed against. */
 const nvidiaModel = {
@@ -35,8 +33,8 @@ const anthropicModel = {
 };
 
 const matchConfig = (extra = {}) => ({
-  gatewayUrl: GATEWAY,
   mode: 'match',
+  canNameUpstream: false,
   openaiUpstream: 'https://integrate.api.nvidia.com/v1',
   anthropicUpstream: 'https://api.anthropic.com',
   ...extra,
@@ -46,7 +44,7 @@ const none = new Set();
 
 describe('redirect decision', () => {
   it('redirects when the gateway forwards to the model’s own endpoint', () => {
-    const decision = decideRedirect(nvidiaModel, matchConfig(), none);
+    const decision = decideRedirect(nvidiaModel, matchConfig(), none, []);
     assert.equal(decision.kind, 'redirect');
     assert.equal(decision.provider, 'nvidia');
     assert.equal(decision.upstream, 'https://integrate.api.nvidia.com/v1');
@@ -60,6 +58,7 @@ describe('redirect decision', () => {
       nvidiaModel,
       matchConfig({ openaiUpstream: 'https://api.openai.com/v1' }),
       none,
+      [],
     );
     assert.equal(decision.kind, 'skip');
     assert.equal(decision.code, 'upstream-mismatch');
@@ -88,14 +87,19 @@ describe('redirect decision', () => {
       anthropicModel,
       matchConfig({ openaiUpstream: 'https://api.openai.com/v1' }),
       none,
+      [],
     );
     assert.equal(decision.kind, 'redirect');
     assert.equal(decision.api, 'anthropic-messages');
   });
 
   it('refuses an API the gateway has no route for', () => {
-    for (const api of ['google-generative-ai', 'bedrock-converse-stream', 'mistral-conversations']) {
-      const decision = decideRedirect({ ...nvidiaModel, api }, matchConfig(), none);
+    for (const api of [
+      'google-generative-ai',
+      'bedrock-converse-stream',
+      'mistral-conversations',
+    ]) {
+      const decision = decideRedirect({ ...nvidiaModel, api }, matchConfig(), none, []);
       assert.equal(decision.kind, 'skip', api);
       assert.equal(decision.code, 'unserviceable-api', api);
     }
@@ -108,7 +112,7 @@ describe('redirect decision', () => {
   // does not have, with the inherited value rendered into the reason string.
   it('refuses an API named after an inherited object property', () => {
     for (const api of ['constructor', 'toString', 'valueOf', '__proto__']) {
-      const decision = decideRedirect({ ...anthropicModel, api }, matchConfig(), none);
+      const decision = decideRedirect({ ...anthropicModel, api }, matchConfig(), none, []);
       assert.equal(decision.kind, 'skip', api);
       assert.equal(decision.code, 'unserviceable-api', api);
     }
@@ -119,8 +123,9 @@ describe('redirect decision', () => {
   it('refuses when the gateway upstream is unknown', () => {
     const decision = decideRedirect(
       nvidiaModel,
-      { gatewayUrl: GATEWAY, mode: 'match' },
+      { mode: 'match', canNameUpstream: false },
       none,
+      [],
     );
     assert.equal(decision.kind, 'skip');
     assert.equal(decision.code, 'unknown-upstream');
@@ -130,21 +135,22 @@ describe('redirect decision', () => {
   it('force skips the match check, match does not', () => {
     const forced = decideRedirect(
       nvidiaModel,
-      { gatewayUrl: GATEWAY, mode: 'force', openaiUpstream: 'https://api.openai.com/v1' },
+      { mode: 'force', canNameUpstream: false, openaiUpstream: 'https://api.openai.com/v1' },
       none,
+      [],
     );
     assert.equal(forced.kind, 'redirect');
     assert.match(forced.reason, /not checked/);
   });
 
   it('off disables redirection entirely', () => {
-    const decision = decideRedirect(nvidiaModel, matchConfig({ mode: 'off' }), none);
+    const decision = decideRedirect(nvidiaModel, matchConfig({ mode: 'off' }), none, []);
     assert.equal(decision.kind, 'skip');
     assert.equal(decision.code, 'disabled');
   });
 
   it('has nothing to decide before a model is resolved', () => {
-    const decision = decideRedirect(undefined, matchConfig(), none);
+    const decision = decideRedirect(undefined, matchConfig(), none, []);
     assert.equal(decision.kind, 'skip');
     assert.equal(decision.code, 'no-model');
   });
@@ -152,7 +158,7 @@ describe('redirect decision', () => {
   // Without this, the second call compares the gateway URL against the upstream
   // and reports a mismatch for a provider it redirected itself.
   it('is idempotent once a provider has been redirected', () => {
-    const decision = decideRedirect(nvidiaModel, matchConfig(), new Set(['nvidia']));
+    const decision = decideRedirect(nvidiaModel, matchConfig(), new Set(['nvidia']), []);
     assert.equal(decision.kind, 'skip');
     assert.equal(decision.code, 'already-redirected');
   });
@@ -162,13 +168,18 @@ describe('what reaches the trace', () => {
   // A mark per session for "no model yet" is noise; a mark explaining why LLM
   // spans are absent is the whole point.
   it('records outcomes that explain a trace, not bookkeeping', () => {
-    assert.equal(isNotable(decideRedirect(nvidiaModel, matchConfig(), none)), true);
+    assert.equal(isNotable(decideRedirect(nvidiaModel, matchConfig(), none, [])), true);
     assert.equal(
-      isNotable(decideRedirect(nvidiaModel, matchConfig({ openaiUpstream: 'https://x.test' }), none)),
+      isNotable(
+        decideRedirect(nvidiaModel, matchConfig({ openaiUpstream: 'https://x.test' }), none, []),
+      ),
       true,
     );
-    assert.equal(isNotable(decideRedirect(undefined, matchConfig(), none)), false);
-    assert.equal(isNotable(decideRedirect(nvidiaModel, matchConfig(), new Set(['nvidia']))), false);
+    assert.equal(isNotable(decideRedirect(undefined, matchConfig(), none, [])), false);
+    assert.equal(
+      isNotable(decideRedirect(nvidiaModel, matchConfig(), new Set(['nvidia']), [])),
+      false,
+    );
   });
 });
 
@@ -219,13 +230,13 @@ describe('a provider whose models span API families', () => {
 
   it('refuses to redirect when a sibling would be sent somewhere the gateway does not front', () => {
     const config = {
-      gatewayUrl: 'http://127.0.0.1:4040',
       mode: 'match',
+      canNameUpstream: false,
       anthropicUpstream: 'https://api.fireworks.ai/inference',
       openaiUpstream: 'https://api.openai.com/v1',
     };
     // Judged alone, the selected model looks perfectly safe.
-    assert.equal(decideRedirect(ANTHROPIC, config, new Set()).kind, 'redirect');
+    assert.equal(decideRedirect(ANTHROPIC, config, new Set(), []).kind, 'redirect');
 
     // Judged with its siblings, it is not: the openai-completions models would be
     // pointed at api.openai.com carrying a Fireworks key and a Fireworks model id.
@@ -238,8 +249,8 @@ describe('a provider whose models span API families', () => {
 
   it('redirects once both upstreams point at that provider', () => {
     const config = {
-      gatewayUrl: 'http://127.0.0.1:4040',
       mode: 'match',
+      canNameUpstream: false,
       anthropicUpstream: 'https://api.fireworks.ai/inference',
       openaiUpstream: 'https://api.fireworks.ai/inference/v1',
     };
@@ -251,8 +262,8 @@ describe('a provider whose models span API families', () => {
 
   it('is notable, so the trace explains why there are no LLM spans', () => {
     const config = {
-      gatewayUrl: 'http://127.0.0.1:4040',
       mode: 'match',
+      canNameUpstream: false,
       anthropicUpstream: 'https://api.fireworks.ai/inference',
       openaiUpstream: 'https://api.openai.com/v1',
     };
@@ -261,9 +272,8 @@ describe('a provider whose models span API families', () => {
 });
 
 describe('naming an upstream the gateway does not front', () => {
-  /** The launcher's credential is what the gateway requires before honouring the header. */
-  const namingConfig = (extra = {}) =>
-    matchConfig({ proxyToken: 'nrp_testtoken', ...extra });
+  /** A launched session holds the proxy credential the gateway requires before honouring the header. */
+  const namingConfig = (extra = {}) => matchConfig({ canNameUpstream: true, ...extra });
 
   it('redirects past a mismatch by naming the model endpoint', () => {
     const decision = decideRedirect(
@@ -278,12 +288,9 @@ describe('naming an upstream the gateway does not front', () => {
   });
 
   it('redirects when the gateway upstream is unknown', () => {
-    const decision = decideRedirect(
+    const decision = decideRedirect(nvidiaModel, { mode: 'match', canNameUpstream: true }, none, [
       nvidiaModel,
-      { gatewayUrl: GATEWAY, mode: 'match', proxyToken: 'nrp_testtoken' },
-      none,
-      [nvidiaModel],
-    );
+    ]);
 
     assert.equal(decision.kind, 'redirect');
     assert.equal(decision.namedUpstream, nvidiaModel.baseUrl);

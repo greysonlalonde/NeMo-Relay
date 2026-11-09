@@ -4,13 +4,13 @@
 /**
  * Drives the extension's lifecycle handlers and asserts what reaches the gateway.
  *
- * `gateway-client.test.mjs` covers the wire contract in isolation; nothing
+ * `hook-forward.test.mjs` covers the wire contract in isolation; nothing
  * exercised the handlers themselves, so the identity fields the gateway cannot
  * infer -- `attempt_index` and `turn_seq` -- were implemented and demonstrated
  * once in a live trace but never pinned. These tests pin them, plus the
  * shutdown-reason behavior.
  *
- * Run: node --test integrations/pi/test/*.test.mjs
+ * Run: npm test --workspace=nemo-relay-pi
  */
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
@@ -321,11 +321,20 @@ describe('compaction', () => {
     const fire = load();
     await fire('session_start', { reason: 'startup' });
     assert.equal(
-      await fire('session_before_compact', { reason: 'manual', willRetry: false }),
+      await fire('session_before_compact', {
+        reason: 'manual',
+        willRetry: false,
+        preparation: { tokensBefore: 10, isSplitTurn: false },
+      }),
       undefined,
     );
     assert.equal(
-      await fire('session_compact', { reason: 'manual', willRetry: false, fromExtension: false }),
+      await fire('session_compact', {
+        reason: 'manual',
+        willRetry: false,
+        fromExtension: false,
+        compactionEntry: { tokensBefore: 10 },
+      }),
       undefined,
     );
     await fire('session_shutdown', { reason: 'quit' });
@@ -336,7 +345,11 @@ describe('compaction', () => {
   it('carries the retry marker that agent_end lacks', async () => {
     const fire = load();
     await fire('session_start', { reason: 'startup' });
-    await fire('session_before_compact', { reason: 'overflow', willRetry: true });
+    await fire('session_before_compact', {
+      reason: 'overflow',
+      willRetry: true,
+      preparation: { tokensBefore: 10, isSplitTurn: false },
+    });
     await fire('session_shutdown', { reason: 'quit' });
     assert.equal(named(ctx.posts, 'session_before_compact')[0].will_retry, true);
   });
@@ -370,23 +383,29 @@ describe('concurrent tools in one turn', () => {
     await fire('agent_start');
     await fire('turn_start', { turnIndex: 0, timestamp: 1 });
 
-    await fire('tool_execution_start', { toolCallId: 'a', toolName: 'read', args: {} });
-    await fire('tool_execution_start', { toolCallId: 'b', toolName: 'bash', args: {} });
     // Both gates in flight at once, which is what the serial queue has to survive.
     await Promise.all([
       fire('tool_call', { toolCallId: 'a', toolName: 'read', input: { path: 'a.txt' } }),
       fire('tool_call', { toolCallId: 'b', toolName: 'bash', input: { command: 'ls' } }),
     ]);
     // Closing in the reverse order, which is the case that motivates the id keying.
-    await fire('tool_execution_end', { toolCallId: 'b', toolName: '', result: 'ok', isError: false });
-    await fire('tool_execution_end', { toolCallId: 'a', toolName: '', result: 'ok', isError: false });
+    await fire('tool_execution_end', {
+      toolCallId: 'b',
+      toolName: 'bash',
+      result: 'ok',
+      isError: false,
+    });
+    await fire('tool_execution_end', {
+      toolCallId: 'a',
+      toolName: 'read',
+      result: 'ok',
+      isError: false,
+    });
     await fire('turn_end', { turnIndex: 0 });
     await fire('session_shutdown', { reason: 'quit' });
 
     const ends = named(ctx.posts, 'tool_execution_end');
     assert.equal(ends.length, 2);
-    // `toolName` was empty on both ends, so each had to be recovered from the start that
-    // named it -- and recovered from the *right* one.
     const byId = Object.fromEntries(ends.map((post) => [post.tool_call_id, post.tool_name]));
     assert.deepEqual(byId, { a: 'read', b: 'bash' });
     assert.ok(
@@ -452,10 +471,9 @@ describe('unpaired tool boundaries', () => {
   it('closes a blocked call, which never reaches tool_result', async () => {
     const fire = load();
     await fire('session_start', { reason: 'startup' });
-    await fire('tool_execution_start', { toolCallId: 'blocked', toolName: 'read', args: {} });
     await fire('tool_execution_end', {
       toolCallId: 'blocked',
-      toolName: '',
+      toolName: 'read',
       result: 'Tool failed.',
       isError: true,
     });
@@ -464,19 +482,7 @@ describe('unpaired tool boundaries', () => {
     const [end] = named(ctx.posts, 'tool_execution_end');
     assert.ok(end, 'a blocked call must still close');
     assert.equal(end.status, 'error');
-    assert.equal(end.tool_name, 'read', 'the name comes from the start, which did fire');
-  });
-
-  it('falls back to a placeholder when no start ever named the tool', async () => {
-    const fire = load();
-    await fire('session_start', { reason: 'startup' });
-    await fire('tool_execution_end', { toolCallId: 'orphan', toolName: '', result: null, isError: false });
-    await fire('session_shutdown', { reason: 'quit' });
-
-    // Dropping the post would lose the span entirely; the gateway synthesizes the missing
-    // start, and a named-but-unknown tool is more useful than nothing.
-    const [end] = named(ctx.posts, 'tool_execution_end');
-    assert.equal(end.tool_name, 'unknown');
+    assert.equal(end.tool_name, 'read');
   });
 });
 
@@ -512,7 +518,12 @@ describe('compaction-driven re-entry', () => {
       preparation: { tokensBefore: 120_000, isSplitTurn: false },
     });
     await fire('agent_end', { messages: [] });
-    await fire('session_compact', { reason: 'overflow', willRetry: true, fromExtension: false });
+    await fire('session_compact', {
+      reason: 'overflow',
+      willRetry: true,
+      fromExtension: false,
+      compactionEntry: { tokensBefore: 120_000 },
+    });
     await fire('agent_start');
     await fire('turn_start', { turnIndex: 0, timestamp: 2 });
     await fire('turn_end', { turnIndex: 0 });
@@ -522,9 +533,18 @@ describe('compaction-driven re-entry', () => {
 
     const starts = named(ctx.posts, 'turn_start');
     // pi says turn 0 both times; only turn_seq can tell them apart.
-    assert.deepEqual(starts.map((post) => post.turn_index), [0, 0]);
-    assert.deepEqual(starts.map((post) => post.turn_seq), [0, 1]);
-    assert.deepEqual(starts.map((post) => post.attempt_index), [0, 1]);
+    assert.deepEqual(
+      starts.map((post) => post.turn_index),
+      [0, 0],
+    );
+    assert.deepEqual(
+      starts.map((post) => post.turn_seq),
+      [0, 1],
+    );
+    assert.deepEqual(
+      starts.map((post) => post.attempt_index),
+      [0, 1],
+    );
 
     const [announced] = named(ctx.posts, 'session_before_compact');
     assert.equal(announced.will_retry, true);

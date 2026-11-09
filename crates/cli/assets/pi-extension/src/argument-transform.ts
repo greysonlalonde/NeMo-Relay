@@ -42,11 +42,7 @@
  * gateway that answered with something unusable.
  */
 
-/** What the gateway sent back on an allowed `tool_call`. */
-export type TransformEnvelope = {
-  tool_call_id?: unknown;
-  input?: unknown;
-};
+import type { AllowBody } from './gateway.ts';
 
 export type TransformOutcome =
   | { kind: 'none' }
@@ -102,7 +98,10 @@ function arrayShapeViolation(current: unknown, next: unknown, path: string): str
   );
 }
 
-function firstViolation<T>(items: T[], check: (item: T, index: number) => string | null): string | null {
+function firstViolation<T>(
+  items: T[],
+  check: (item: T, index: number) => string | null,
+): string | null {
   for (const [index, item] of items.entries()) {
     const violation = check(item, index);
     if (violation) return violation;
@@ -116,11 +115,11 @@ function firstViolation<T>(items: T[], check: (item: T, index: number) => string
  * Pure, so the decision matrix is testable without pi or a gateway.
  */
 export function decideTransform(
-  body: { tool_call?: TransformEnvelope } | null,
+  body: AllowBody,
   toolCallId: string,
-  current: Record<string, unknown>,
+  current: object,
 ): TransformOutcome {
-  const envelope = body?.tool_call;
+  const envelope = body.tool_call;
   if (envelope?.input === undefined) return { kind: 'none' };
 
   // The echoed id is what proves the transform belongs to the call we just posted, so it has to be
@@ -130,7 +129,7 @@ export function decideTransform(
     const named =
       typeof envelope.tool_call_id === 'string'
         ? envelope.tool_call_id
-        : JSON.stringify(envelope.tool_call_id) ?? 'nothing';
+        : (JSON.stringify(envelope.tool_call_id) ?? 'nothing');
     return {
       kind: 'refuse',
       reason: `the transform names tool call ${named}, not ${toolCallId}`,
@@ -138,7 +137,10 @@ export function decideTransform(
   }
 
   if (jsonType(envelope.input) !== 'object') {
-    return { kind: 'refuse', reason: `the transform is ${jsonType(envelope.input)}, not an object` };
+    return {
+      kind: 'refuse',
+      reason: `the transform is ${jsonType(envelope.input)}, not an object`,
+    };
   }
 
   const violation = shapeViolation(current, envelope.input);
@@ -154,13 +156,8 @@ export function decideTransform(
  * and to later handlers, so replacing the reference would be discarded. Because
  * the shape check has already run, this only ever overwrites existing keys.
  */
-export function applyTransform(
-  target: Record<string, unknown>,
-  input: Record<string, unknown>,
-): void {
-  for (const [key, value] of Object.entries(input)) {
-    target[key] = value;
-  }
+export function applyTransform(target: object, input: Record<string, unknown>): void {
+  Object.assign(target, input);
 }
 
 /** The block reason used when a transform arrives but cannot be applied safely. */

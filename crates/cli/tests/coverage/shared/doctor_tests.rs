@@ -217,14 +217,14 @@ fn agent_version_diagnostics_separate_unverified_optional_and_required_failures(
     let mut details = Vec::new();
     apply_agent_version_status(
         CodingAgent::Pi,
-        Some("0.85.0"),
+        Some("1.6.0"),
         true,
         false,
         &mut status,
         &mut details,
     );
     assert_eq!(status, Status::Warn);
-    assert!(details.iter().any(|detail| detail.contains("0.84")));
+    assert!(details.iter().any(|detail| detail.contains("1.5")));
 
     let mut status = Status::Pass;
     let mut details = Vec::new();

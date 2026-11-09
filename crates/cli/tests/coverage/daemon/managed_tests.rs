@@ -53,12 +53,12 @@ fn v1_render_is_deterministic_and_contains_only_deployment_constants() {
     let first = render_bundle(&spec).unwrap();
     let second = render_bundle(&spec).unwrap();
     assert_eq!(first.manifest, second.manifest);
-    assert_eq!(first.artifacts.len(), 13);
+    assert_eq!(first.artifacts.len(), 21);
     for (left, right) in first.artifacts.iter().zip(&second.artifacts) {
         assert_eq!(left.path, right.path);
         assert_eq!(left.bytes, right.bytes);
         let text = String::from_utf8(left.bytes.clone()).unwrap();
-        if left.path != "pi/extension-v1/package.json" && env!("CARGO_PKG_VERSION") != "1.0.0" {
+        if left.path != "pi/extension-v2/package.json" && env!("CARGO_PKG_VERSION") != "1.0.0" {
             assert!(!text.contains(env!("CARGO_PKG_VERSION")));
         }
         for forbidden in [
@@ -132,52 +132,64 @@ fn assert_pi_bundle_artifacts(bundle: &RenderedBundle) {
     let pi_config = bundle
         .artifacts
         .iter()
-        .find(|artifact| artifact.path == "pi/extension-v1/managed-config.json")
+        .find(|artifact| artifact.path == PI_CONFIG_PATH)
         .unwrap();
     let pi_config: serde_json::Value = serde_json::from_slice(&pi_config.bytes).unwrap();
+    assert_eq!(pi_config["schema"], "nemo-relay-managed-pi-v2");
     assert_eq!(pi_config["daemonAddress"], "https://relay.example.com:443");
     assert_eq!(
         pi_config["dispatcherCommand"],
         "/opt/nvidia/bin/nemo-relay-dispatch"
     );
 
-    for (path, expected) in [
-        (
-            "pi/extension-v1/README.md",
-            canonical_embedded_text(include_str!(
-                "../../../src/daemon/managed/pi_extension/README.md"
-            ))
-            .into_bytes(),
-        ),
-        (
-            "pi/extension-v1/index.ts",
-            canonical_embedded_text(include_str!(
-                "../../../src/daemon/managed/pi_extension/index.ts"
-            ))
-            .into_bytes(),
-        ),
-        (
-            "pi/extension-v1/package.json",
-            canonical_embedded_text(include_str!(
-                "../../../src/daemon/managed/pi_extension/package.json"
-            ))
-            .into_bytes(),
-        ),
-        (
-            "pi/extension-v1/tsconfig.json",
-            canonical_embedded_text(include_str!(
-                "../../../src/daemon/managed/pi_extension/tsconfig.json"
-            ))
-            .into_bytes(),
-        ),
-    ] {
+    for (path, contents) in PI_ARTIFACTS {
         let rendered = bundle
             .artifacts
             .iter()
-            .find(|artifact| artifact.path == path)
+            .find(|artifact| artifact.path == *path)
             .unwrap();
-        assert_eq!(rendered.bytes, expected, "{path}");
+        assert_eq!(rendered.bytes, contents.as_bytes(), "{path}");
     }
+}
+
+fn typescript_files(root: &std::path::Path, directory: &str) -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(root.join(directory))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".ts"))
+        .map(|name| format!("{directory}/{name}"))
+        .collect();
+    files.sort();
+    files
+}
+
+#[test]
+fn every_file_the_managed_extension_loads_is_embedded() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets")
+        .join("pi-extension");
+    let mut expected = vec![
+        "README.md".to_string(),
+        "index.ts".to_string(),
+        "package.json".to_string(),
+    ];
+    expected.extend(typescript_files(&root, "src"));
+    expected.extend(typescript_files(&root, "src/managed"));
+    expected.sort();
+
+    let mut embedded: Vec<String> = PI_ARTIFACTS
+        .iter()
+        .map(|(path, _)| path.strip_prefix("pi/extension-v2/").unwrap().to_string())
+        .collect();
+    embedded.sort();
+
+    assert_eq!(
+        embedded, expected,
+        "crates/cli/assets/pi-extension no longer matches PI_ARTIFACTS in \
+         crates/cli/src/daemon/managed/mod.rs; add or remove the matching entries"
+    );
 }
 
 #[test]
@@ -189,7 +201,7 @@ fn managed_pi_launch_disables_discovered_extensions() {
     let readme = rendered
         .artifacts
         .iter()
-        .find(|artifact| artifact.path == "pi/extension-v1/README.md")
+        .find(|artifact| artifact.path == "pi/extension-v2/README.md")
         .unwrap();
     let readme = std::str::from_utf8(&readme.bytes).unwrap();
     assert!(
@@ -203,49 +215,29 @@ fn managed_pi_launch_disables_discovered_extensions() {
 }
 
 #[test]
-fn managed_pi_extension_forwards_custom_provider_endpoints_without_route_urls() {
-    let source = include_str!("../../../src/daemon/managed/pi_extension/index.ts");
-
-    for contract in [
-        "['daemon', 'mcp', '--daemon-address'",
-        "/hooks/pi",
-        "pi.registerProvider(model.provider",
-        "'openai-completions'",
-        "'openai-responses'",
-        "'anthropic-messages'",
-        "pi.on('session_start'",
-        "pi.on('session_before_compact'",
-        "pi.on('session_compact'",
-        "pi.on('tool_call'",
-        "pi.on('user_bash'",
-        "typeof toolCall.tool_call_id !== 'string'",
-        "shapeViolation(current, toolCall.input)",
-        "'tool_arguments_transformed'",
-        "code: 'model-registry-unavailable'",
-        "function toolResultText(content: unknown)",
-        "function sliceAtCodePointBoundary(value: string",
-        "const MCP_READY_TIMEOUT_MS = 180_000",
-        "[CLIENT_TOKEN_HEADER]: active.credential",
-        "const UPSTREAM_BASE_URL_HEADER = 'x-nemo-relay-upstream-base-url'",
-        "[UPSTREAM_BASE_URL_HEADER]: decision.upstream",
-    ] {
-        assert!(source.contains(contract), "missing Pi contract: {contract}");
-    }
-
-    assert_eq!(
-        source.matches("const CLIENT_TOKEN_HEADER =").count(),
-        1,
-        "the managed Pi extension must define one Relay-specific public header"
-    );
-    for forbidden in [
-        "x-nemo-relay-session-id",
-        "x-nemo-relay-fingerprint",
-        "x-nemo-relay-generation",
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "managed Pi source contains forbidden routing metadata: {forbidden}"
-        );
+fn managed_pi_sources_carry_no_per_user_routing_or_standalone_transport() {
+    let rendered = render_bundle(&spec([ManagedAgent::Pi])).unwrap();
+    let sources = rendered
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.path.ends_with(".ts"))
+        .collect::<Vec<_>>();
+    assert!(sources.len() > 1);
+    for artifact in sources {
+        let text = std::str::from_utf8(&artifact.bytes).unwrap();
+        for forbidden in [
+            "x-nemo-relay-session-id",
+            "x-nemo-relay-proxy-token",
+            "x-nemo-relay-fingerprint",
+            "x-nemo-relay-generation",
+            "hook-forward",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "{} contains {forbidden}",
+                artifact.path
+            );
+        }
     }
 }
 
@@ -262,7 +254,7 @@ fn managed_pi_config_json_encodes_cross_platform_deployment_values() {
     let config = rendered
         .artifacts
         .iter()
-        .find(|artifact| artifact.path == "pi/extension-v1/managed-config.json")
+        .find(|artifact| artifact.path == PI_CONFIG_PATH)
         .unwrap();
     let text = String::from_utf8(config.bytes.clone()).unwrap();
     assert!(!text.contains("__NEMO_RELAY_"));
@@ -304,7 +296,7 @@ fn v1_artifact_bytes_do_not_depend_on_binary_or_platform_versioning() {
 fn canonical_v1_bundle_matches_the_golden_digest() {
     // This digest pins the v1 manifest and every artifact byte for a canonical deployment,
     // including the supported hook set. Update it only for intentional bundle changes.
-    const GOLDEN_SHA256: &str = "1d335e66375019e013de30002886bea219a97bde3eb20a20a758b6c5a1de200f";
+    const GOLDEN_SHA256: &str = "92e1079993cede01befbbf4dfad9036cca17ec437bcb36a3560c3bd0fbe572a1";
     let rendered = render_bundle(&spec([
         ManagedAgent::Codex,
         ManagedAgent::ClaudeCode,
@@ -312,18 +304,6 @@ fn canonical_v1_bundle_matches_the_golden_digest() {
     ]))
     .unwrap();
     assert_eq!(rendered_bundle_digest(&rendered).to_string(), GOLDEN_SHA256);
-}
-
-#[test]
-fn embedded_managed_text_has_platform_independent_line_endings() {
-    assert_eq!(
-        canonical_embedded_text("first\r\nsecond\r\n"),
-        "first\nsecond\n"
-    );
-    assert_eq!(
-        canonical_embedded_text("first\nsecond\n"),
-        "first\nsecond\n"
-    );
 }
 
 #[test]

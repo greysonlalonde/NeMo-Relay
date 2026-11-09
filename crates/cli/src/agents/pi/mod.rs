@@ -35,11 +35,9 @@ pub(super) const DESCRIPTOR: AgentDescriptor = AgentDescriptor {
     // "supported" for a host that can move a hook shape in a minor. Below the floor
     // is an error, above this is a warning -- untested, not broken, and blocking a
     // launch over it would make the user downgrade pi to use Relay at all.
-    verified_through: Some((0, 84)),
-    // The hooks the extension actually posts to `/hooks/pi`, which is narrower than the set it
-    // registers with pi. `tool_execution_start` is registered but never forwarded -- it fires
-    // before validation and for calls that never execute, so it is used only to remember a tool
-    // name for the matching end -- and listing it here described a hook the gateway never sees.
+    verified_through: Some((1, 5)),
+    // Hooks the extension posts to `/hooks/pi`. `tool_execution_start` is not registered:
+    // it fires before validation and for calls that never execute.
     hook_events: &[
         "session_start",
         "session_shutdown",

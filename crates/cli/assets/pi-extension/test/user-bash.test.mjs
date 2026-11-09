@@ -14,7 +14,7 @@
  * `pi_user_bash_is_not_gated_by_a_policy_that_names_the_bash_tool`
  * (`crates/cli/tests/coverage/shared/server_tests.rs`).
  *
- * Run: node --test integrations/pi/test/*.test.mjs
+ * Run: npm test --workspace=nemo-relay-pi
  */
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
@@ -121,7 +121,9 @@ describe('inline shell gate', () => {
     // rewrite cannot be honored.
     gateway.replyWith({
       status: 200,
-      payload: { tool_call: { tool_call_id: 'user-bash-0', input: { command: 'git status --short' } } },
+      payload: {
+        tool_call: { tool_call_id: 'user-bash-0', input: { command: 'git status --short' } },
+      },
     });
 
     const result = await fire('user_bash', {
